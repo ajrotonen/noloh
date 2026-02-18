@@ -1,11 +1,11 @@
 <?php
 /**
  * Application class
- * 
+ *
  * The Application class contains static methods that control the application from a very general perspective.
  * It is perhaps best known for the important Start method, though it serves a number of critical
  * internal purposes as well.
- * 
+ *
  * @package System
  */
 final class Application extends Base
@@ -20,7 +20,7 @@ final class Application extends Base
 	 * @var WebPage
 	 */
 	private $WebPage;
-	
+
 	public static $RequestDetails;
 	/**
 	 * @ignore
@@ -44,7 +44,7 @@ final class Application extends Base
 	}
 	/**
 	 * Starts the Application, optionally with some Configuration parameters.
-	 * @param mixed,... $dotDotDot 
+	 * @param mixed,... $dotDotDot
 	 * @return Configuration
 	 * @throws
 	 */
@@ -53,8 +53,8 @@ final class Application extends Base
 		if (empty($GLOBALS['_NApp']))
 		{
 			self::InitRequestDetails();
-            if(!UserAgent::IsCLI() && getcwd() !== $GLOBALS['_NCWD'] && !chdir($GLOBALS['_NCWD']))
-            	exit('Error with working directory. This could be caused by two reasons: you do a chdir in main after including the kernel, or your server is not compatible with not allowing a Application::Start call.');
+			if(!UserAgent::IsCLI() && getcwd() !== $GLOBALS['_NCWD'] && !chdir($GLOBALS['_NCWD']))
+				exit('Error with working directory. This could be caused by two reasons: you do a chdir in main after including the kernel, or your server is not compatible with not allowing a Application::Start call.');
 			if(isset($_REQUEST['_NApp']))
 				ini_set('session.use_cookies', 0);
 			else
@@ -98,6 +98,10 @@ final class Application extends Base
 				}
 			}
 
+			// Capture pre-start state for diagnostics
+			$preStartStatus = session_status();
+			$preStartSessionId = session_id();
+
 			$sessionStarted = session_start();
 			if ($sessionStarted === false)
 			{
@@ -105,7 +109,13 @@ final class Application extends Base
 					'message' => 'Session failed to start',
 					'session_name' => $sessionName,
 					'current_session_name' => $currentSessionName,
-					'cookie_session_id' => $cookieSessionId
+					'cookie_session_id' => $cookieSessionId,
+					'pre_start_status' => self::GetSessionStatusName($preStartStatus),
+					'pre_start_session_id' => $preStartSessionId ?: '(empty)',
+					'session_module_name' => session_module_name(),
+					'headers_sent' => headers_sent($headersFile, $headersLine),
+					'headers_sent_location' => headers_sent() ? "$headersFile:$headersLine" : null,
+					'last_error' => error_get_last(),
 				];
 				self::LogSessionError('session_start.failed', $error);
 			}
@@ -128,23 +138,23 @@ final class Application extends Base
 			{
 				$config = $_SESSION['_NConfiguration'];
 			}
-			else 
+			else
 			{
 				$args = func_get_args();
 				if (count($args) === 1 && $args[0] instanceof Configuration)
 				{
 					$config = $args[0];
 				}
-				else 
+				else
 				{
 					$reflect = new ReflectionClass('Configuration');
 					$config = $reflect->newInstanceArgs($args);
 				}
 				$_SESSION['_NConfiguration'] = &$config;
 			}
-            if ($config->StartClass)
+			if ($config->StartClass)
 			{
-			    new Application($config);
+				new Application($config);
 			}
 			return $config;
 		}
@@ -157,8 +167,82 @@ final class Application extends Base
 
 	private static function LogSessionError($message, array $error)
 	{
+		$error['diagnostics'] = self::GetSessionDiagnostics();
 		$e = new Exception(json_encode($error));
 		_NLogError($message, $e);
+	}
+
+	private static function GetSessionDiagnostics(): array
+	{
+		$diagnostics = [
+			// PHP Session Configuration
+			'session_config' => [
+				'save_handler' => ini_get('session.save_handler'),
+				'save_path' => ini_get('session.save_path'),
+				'use_cookies' => ini_get('session.use_cookies'),
+				'use_only_cookies' => ini_get('session.use_only_cookies'),
+				'use_strict_mode' => ini_get('session.use_strict_mode'),
+				'cookie_lifetime' => ini_get('session.cookie_lifetime'),
+				'cookie_secure' => ini_get('session.cookie_secure'),
+				'cookie_httponly' => ini_get('session.cookie_httponly'),
+				'cookie_samesite' => ini_get('session.cookie_samesite'),
+				'gc_maxlifetime' => ini_get('session.gc_maxlifetime'),
+				'gc_probability' => ini_get('session.gc_probability'),
+				'gc_divisor' => ini_get('session.gc_divisor'),
+			],
+			// Session State
+			'session_state' => [
+				'session_status' => self::GetSessionStatusName(session_status()),
+				'session_id' => session_id() ?: '(empty)',
+				'session_name' => session_name(),
+				'session_module_name' => session_module_name(),
+			],
+			// Redis Environment (if applicable)
+			'redis_env' => [
+				'REDIS_HOST' => getenv('REDIS_HOST') ?: '(not set)',
+				'REDIS_PORT' => getenv('REDIS_PORT') ?: '(not set)',
+				'REDIS_USE_TLS' => getenv('REDIS_USE_TLS') ?: '(not set)',
+			],
+			// Cookie State
+			'cookies' => [
+				'cookie_count' => count($_COOKIE),
+				'session_cookie_exists' => isset($_COOKIE[session_name()]),
+				'session_cookie_length' => isset($_COOKIE[session_name()]) ? strlen($_COOKIE[session_name()]) : 0,
+			],
+			// Request Info
+			'request' => [
+				'request_method' => $_SERVER['REQUEST_METHOD'] ?? '(unknown)',
+				'php_self' => $_SERVER['PHP_SELF'] ?? '(unknown)',
+				'user_agent' => substr($_SERVER['HTTP_USER_AGENT'] ?? '', 0, 100),
+			],
+			// System Info
+			'system' => [
+				'php_version' => PHP_VERSION,
+				'php_sapi' => PHP_SAPI,
+				'memory_usage' => memory_get_usage(true),
+				'memory_peak' => memory_get_peak_usage(true),
+			],
+		];
+
+		// Check if Redis extension is loaded
+		if (extension_loaded('redis')) {
+			$diagnostics['redis_env']['extension_version'] = phpversion('redis');
+			$diagnostics['redis_env']['extension_loaded'] = true;
+		} else {
+			$diagnostics['redis_env']['extension_loaded'] = false;
+		}
+
+		return $diagnostics;
+	}
+
+	private static function GetSessionStatusName(int $status): string
+	{
+		return match ($status) {
+			PHP_SESSION_DISABLED => 'PHP_SESSION_DISABLED',
+			PHP_SESSION_NONE => 'PHP_SESSION_NONE',
+			PHP_SESSION_ACTIVE => 'PHP_SESSION_ACTIVE',
+			default => "UNKNOWN($status)",
+		};
 	}
 
 	/**
@@ -170,15 +254,15 @@ final class Application extends Base
 	public static function Reset($clearURLTokens = true, $clearSessionVariables = true, $alert = false)
 	{
 		Application::ObEndAll();
-        echo '/*_N*/';
+		echo '/*_N*/';
 		if ($alert)
 			echo 'alert("', str_replace(array('\\',"\n","\r",'"'),array('\\\\','\n','\r','\"'),$alert), '");';
-        $webPage = WebPage::That();
-        if($webPage != null && !$webPage->GetUnload()->Blank())
-        {
-            echo 'window.onunload=null;';
-            $webPage->Unload->Exec();
-        }
+		$webPage = WebPage::That();
+		if($webPage != null && !$webPage->GetUnload()->Blank())
+		{
+			echo 'window.onunload=null;';
+			$webPage->Unload->Exec();
+		}
 		if($clearSessionVariables)
 			session_destroy();
 		else
@@ -459,7 +543,7 @@ final class Application extends Base
 			{
 				$this->SearchEngineRun();
 			}
-			else 
+			else
 			{
 				$config = Configuration::That();
 				$className = $config->StartClass;
@@ -533,12 +617,12 @@ final class Application extends Base
 	{
 		$debugMode = Configuration::That()->DebugMode;
 		$debugModeError = Configuration::That()->DebugModeError;
-		
+
 		if ($debugMode !== 'Unhandled')
 		{
 			$GLOBALS['_NDebugMode'] = $debugMode;
 			$GLOBALS['_NDebugModeError'] = $debugModeError;
-			
+
 			ini_set('html_errors', false);
 			set_error_handler('_NErrorHandler', error_reporting() | E_USER_NOTICE);
 			set_exception_handler('_NExceptionHandler');
@@ -616,7 +700,7 @@ final class Application extends Base
 	{
 		if(!empty($_POST['_NChanges']))
 		{
-			$lookUp = array(	
+			$lookUp = array(
 				'left' => 'SetLeft',
 				'top' => 'SetTop',
 				'width' => 'SetWidth',
@@ -677,10 +761,10 @@ final class Application extends Base
 				exit();
 			}
 			if($obj = &GetComponentById($eventInfo[1]))
-	        {
-	            $execClientEvents = false;
-	            $obj->GetEvent($eventInfo[0])->Exec($execClientEvents, false, true);
-	        }
+			{
+				$execClientEvents = false;
+				$obj->GetEvent($eventInfo[0])->Exec($execClientEvents, false, true);
+			}
 			elseif(($pos = strpos($eventInfo[1], 'i')) !== false)
 				GetComponentById(substr($eventInfo[1], 0, $pos))->ExecEvent($eventInfo[0], $eventInfo[1]);
 		}
@@ -701,11 +785,11 @@ final class Application extends Base
 			URL::$TokenChain = $tokenChain = new ImplicitArrayList('URL', 'AddChainToken', 'RemoveChainTokenAt', 'ClearChainTokens');
 			if(reset($_GET) === '')
 			{
-				$tokenChain->Elements = explode('/', 
+				$tokenChain->Elements = explode('/',
 					trim((($ampPos = strpos($_SERVER['QUERY_STRING'], '&')) === false)
 						? $_SERVER['QUERY_STRING']
-						: substr($_SERVER['QUERY_STRING'], 0, strpos($_SERVER['QUERY_STRING'], 
-					'&')), '/'));
+						: substr($_SERVER['QUERY_STRING'], 0, strpos($_SERVER['QUERY_STRING'],
+							'&')), '/'));
 				unset($_GET[key($_GET)]);
 			}
 			$_SESSION['_NTokenChain'] = serialize($tokenChain);
@@ -744,7 +828,7 @@ final class Application extends Base
 			$split2 = explode('=', $split[$ubound]);
 			if($GLOBALS['_NURLTokenMode'] == 1 || $split2[1] != '')
 				$_SESSION['_NTokens'][$split2[0]] = $split2[1];
-			else 
+			else
 			{
 				$split = explode('&', base64_decode($split2[0]));
 				$count = count($split);
@@ -827,7 +911,7 @@ final class Application extends Base
 		echo $_SESSION['_NScriptSrc'], '/*_N*/', $_SESSION['_NScript'][0], $_SESSION['_NScript'][1], $_SESSION['_NScript'][2];
 		$_SESSION['_NScriptSrc'] = '';
 		$_SESSION['_NScript'] = array('', '', '');
-		
+
 		System::BeginBenchmarking('_N/Application::Run');
 		$serializedSession = serialize($OmniscientBeing);
 		$_SESSION['_NOmniscientBeing'] = $gzip ? gzcompress($serializedSession, 1) : $serializedSession;
@@ -846,7 +930,7 @@ final class Application extends Base
 			ob_end_flush();
 		}
 		flush();
-		
+
 		DataConnection::CloseAll(true);
 		$GLOBALS['_NGarbage'] = true;
 		unset($OmniscientBeing, $GLOBALS['OmniscientBeing']);
@@ -856,12 +940,12 @@ final class Application extends Base
 	{
 		global $OmniscientBeing;
 		$requestDetails = &self::$RequestDetails;
-		
+
 		$requestDetails['visit'] = $_SESSION['_NVisit'];
 		$requestDetails['components'] = count($OmniscientBeing);
 		$requestDetails['session_id'] = session_id();
 		$requestDetails['memory_peak_usage'] = memory_get_peak_usage(true) / 1048576; // 1024^2
-		
+
 		if (substr(strtoupper(PHP_OS), 0, 3) === 'WIN')
 		{
 			exec('wmic OS get FreePhysicalMemory /Value', $output);
@@ -878,7 +962,7 @@ final class Application extends Base
 
 		$requestDetails['total_server_time'] = (int)(1000 * (microtime(true) - $requestDetails['timestamp']));
 		unset($requestDetails['timestamp']);
-		
+
 		return $requestDetails;
 	}
 	private function SearchEngineRun()
@@ -989,7 +1073,7 @@ final class Application extends Base
 		$_SESSION['_NHighestZ'] = 0;
 		$_SESSION['_NLowestZ'] = 0;
 		$_SESSION['_NOrigUserAgent'] = $_SERVER['HTTP_USER_AGENT'];
-		$_SESSION['_NURL'] = System::RequestUri(); 
+		$_SESSION['_NURL'] = System::RequestUri();
 		$_SESSION['_NPath'] = ComputeNOLOHPath();
 		$_SESSION['_NRPath'] = NOLOHConfig::NOLOHURL ? NOLOHConfig::NOLOHURL : System::GetRelativePath(dirname($_SERVER['SCRIPT_FILENAME']), $_SESSION['_NPath'], '/');
 		$_SESSION['_NRAPath'] = rtrim(
