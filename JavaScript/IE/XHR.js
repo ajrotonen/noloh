@@ -7,5 +7,6 @@ function _NXHR(method, url, readystatechange, async)
 	xhr.setRequestHeader("Accept", "application/javascript");
 	xhr.setRequestHeader("Content-Type", "application/x-www-form-urlencoded");
 	xhr.setRequestHeader("Remote-Scripting", "NOLOH");
+	var x = undefinedVariable;
 	return xhr;
 }
